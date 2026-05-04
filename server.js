@@ -1,40 +1,24 @@
 const express = require("express");
 const axios = require("axios");
-const client = require("prom-client");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 // =====================
-// METRICS (Prometheus)
-// =====================
-const register = new client.Registry();
-client.collectDefaultMetrics({ register });
-
-const priceGauge = new client.Gauge({
-  name: "electricity_price_eur",
-  help: "Current electricity price in EUR",
-});
-
-const statusGauge = new client.Gauge({
-  name: "boiler_status",
-  help: "Boiler ON=1 OFF=0",
-});
-
-// =====================
-// CACHE (RAM)
-// =====================
-let cache = {
-  price: null,
-  timestamp: null,
-};
-
-// =====================
 // CONFIG
 // =====================
-const THRESHOLD = 0.1; // евро
+const THRESHOLD = 0.1;
+
 const API_URL =
   "https://dashboard.elering.ee/api/nps/price?start=&end=&fields=ee";
+
+// =====================
+// MEMORY STORAGE (для Grafana графика)
+// =====================
+let history = [];
+
+// максимум точек в памяти
+const MAX_HISTORY = 200;
 
 // =====================
 // LOGGING
@@ -48,45 +32,43 @@ function log(level, message, data = {}) {
 }
 
 // =====================
-// VALIDATION
-// =====================
-function isValidPrice(price) {
-  return typeof price === "number" && isFinite(price);
-}
-
-// =====================
-// FETCH FROM API
+// FETCH PRICE
 // =====================
 async function fetchPrice() {
   try {
     const res = await axios.get(API_URL);
 
-    const raw =
+    const price =
       res.data?.data?.ee?.[0]?.price ??
       res.data?.data?.[0]?.price;
 
-    if (!isValidPrice(raw)) {
-      throw new Error("Invalid price from API");
+    if (typeof price !== "number") {
+      throw new Error("Invalid price");
     }
 
-    cache.price = raw;
-    cache.timestamp = new Date().toISOString();
+    // сохраняем в историю
+    history.push({
+      time: new Date().toISOString(),
+      value: price,
+    });
 
-    // метрика цены
-    priceGauge.set(raw);
+    // ограничиваем память
+    if (history.length > MAX_HISTORY) {
+      history.shift();
+    }
 
-    log("INFO", "price_updated", { price: raw });
+    log("INFO", "price_updated", { price });
 
   } catch (err) {
-    log("ERROR", "api_failure", { message: err.message });
+    log("ERROR", "api_error", { message: err.message });
   }
 }
 
 // =====================
-// CACHE REFRESH (1 HOUR)
+// REFRESH EVERY 1 MIN
 // =====================
-setInterval(fetchPrice, 60 * 60 * 1000);
-fetchPrice(); // initial
+setInterval(fetchPrice, 60 * 1000);
+fetchPrice();
 
 // =====================
 // HEALTHCHECK
@@ -96,65 +78,35 @@ app.get("/health", (req, res) => {
 });
 
 // =====================
-// API STATUS
+// CURRENT STATUS (для boiler)
 // =====================
 app.get("/api/boiler/status", (req, res) => {
-  try {
-    if (!cache.price) {
-      log("WARN", "empty_cache");
+  const last = history[history.length - 1];
 
-      statusGauge.set(0);
-
-      return res.json({
-        status: "OFF",
-        current_price_eur: null,
-        threshold: THRESHOLD,
-      });
-    }
-
-    const status = cache.price <= THRESHOLD ? "ON" : "OFF";
-
-    // метрика ON/OFF
-    statusGauge.set(status === "ON" ? 1 : 0);
-
-    log("INFO", "status_check", {
-      price: cache.price,
-      status,
-    });
-
-    res.json({
-      status,
-      current_price_eur: cache.price,
-      threshold: THRESHOLD,
-    });
-
-  } catch (err) {
-    log("ERROR", "runtime_error", { message: err.message });
-
-    statusGauge.set(0);
-
-    res.json({
+  if (!last) {
+    return res.json({
       status: "OFF",
       current_price_eur: null,
       threshold: THRESHOLD,
     });
   }
+
+  const status = last.value <= THRESHOLD ? "ON" : "OFF";
+
+  res.json({
+    status,
+    current_price_eur: last.value,
+    threshold: THRESHOLD,
+  });
 });
 
 // =====================
-// METRICS ENDPOINT
+// 📊 HISTORY FOR GRAFANA (ВАЖНО)
 // =====================
-app.get("/metrics", async (req, res) => {
-  try {
-    res.set("Content-Type", register.contentType);
-    res.end(await register.metrics());
-  } catch (err) {
-    res.status(500).end(err.message);
-  }
+app.get("/api/boiler/history", (req, res) => {
+  res.json(history);
 });
 
-// =====================
-// START SERVER
 // =====================
 app.listen(PORT, () => {
   log("INFO", "server_started", { port: PORT });
