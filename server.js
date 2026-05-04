@@ -7,18 +7,20 @@ const PORT = process.env.PORT || 3000;
 // =====================
 // CONFIG
 // =====================
-const THRESHOLD = 0.1;
-
+const THRESHOLD = 0.1; // €/kWh
 const API_URL =
   "https://dashboard.elering.ee/api/nps/price?start=&end=&fields=ee";
 
 // =====================
-// MEMORY STORAGE (для Grafana графика)
+// MEMORY CACHE
 // =====================
-let history = [];
+let cache = {
+  price: null,
+  timestamp: null,
+};
 
-// максимум точек в памяти
-const MAX_HISTORY = 200;
+// история для Grafana
+let history = [];
 
 // =====================
 // LOGGING
@@ -32,42 +34,53 @@ function log(level, message, data = {}) {
 }
 
 // =====================
+// VALIDATION
+// =====================
+function isValidPrice(price) {
+  return typeof price === "number" && isFinite(price);
+}
+
+// =====================
 // FETCH PRICE
 // =====================
 async function fetchPrice() {
   try {
     const res = await axios.get(API_URL);
 
-    const price =
+    const raw =
       res.data?.data?.ee?.[0]?.price ??
       res.data?.data?.[0]?.price;
 
-    if (typeof price !== "number") {
-      throw new Error("Invalid price");
+    if (!isValidPrice(raw)) {
+      throw new Error("Invalid price from API");
     }
 
-    // сохраняем в историю
+    // convert €/MWh → €/kWh
+    const price = raw / 1000;
+
+    cache.price = price;
+    cache.timestamp = new Date().toISOString();
+
+    // add to history
     history.push({
-      time: new Date().toISOString(),
+      time: cache.timestamp,
       value: price,
     });
 
-    // ограничиваем память
-    if (history.length > MAX_HISTORY) {
-      history.shift();
-    }
+    // limit memory
+    if (history.length > 500) history.shift();
 
     log("INFO", "price_updated", { price });
 
   } catch (err) {
-    log("ERROR", "api_error", { message: err.message });
+    log("ERROR", "api_failure", { message: err.message });
   }
 }
 
 // =====================
-// REFRESH EVERY 1 MIN
+// INIT REFRESH
 // =====================
-setInterval(fetchPrice, 60 * 1000);
+setInterval(fetchPrice, 60 * 1000); // каждую минуту
 fetchPrice();
 
 // =====================
@@ -78,35 +91,35 @@ app.get("/health", (req, res) => {
 });
 
 // =====================
-// CURRENT STATUS (для boiler)
+// CURRENT STATUS (Grafana Stat)
 // =====================
 app.get("/api/boiler/status", (req, res) => {
-  const last = history[history.length - 1];
-
-  if (!last) {
+  if (!cache.price) {
     return res.json({
-      status: "OFF",
       current_price_eur: null,
       threshold: THRESHOLD,
+      status: "UNKNOWN",
     });
   }
 
-  const status = last.value <= THRESHOLD ? "ON" : "OFF";
+  const status = cache.price <= THRESHOLD ? "ON" : "OFF";
 
   res.json({
-    status,
-    current_price_eur: last.value,
+    current_price_eur: cache.price,
     threshold: THRESHOLD,
+    status,
   });
 });
 
 // =====================
-// 📊 HISTORY FOR GRAFANA (ВАЖНО)
+// HISTORY (Grafana Time series)
 // =====================
 app.get("/api/boiler/history", (req, res) => {
   res.json(history);
 });
 
+// =====================
+// START SERVER
 // =====================
 app.listen(PORT, () => {
   log("INFO", "server_started", { port: PORT });
