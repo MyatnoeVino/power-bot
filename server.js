@@ -24,9 +24,11 @@ const API_URL =
 // =====================
 function log(level, message, data = {}) {
   console.log(
-    `[${level}] service=power-bot ${message} ${Object.entries(data)
-      .map(([k, v]) => `${k}=${v}`)
-      .join(" ")}`
+    `[${level}] service=power-bot ${message} ${
+      Object.entries(data)
+        .map(([k, v]) => `${k}=${v}`)
+        .join(" ")
+    }`
   );
 }
 
@@ -63,18 +65,19 @@ async function fetchPrice() {
 }
 
 // =====================
-// CACHE REFRESH (1 HOUR)
+// INITIAL + REFRESH
 // =====================
-setInterval(fetchPrice, 60 * 60 * 1000);
-fetchPrice(); // initial
+fetchPrice();
+setInterval(fetchPrice, 60 * 60 * 1000); // 1 hour
 
 // =====================
-// ENDPOINT
+// ROUTES
 // =====================
 app.get("/api/boiler/status", (req, res) => {
   try {
     if (!cache.price) {
       log("WARN", "empty_cache");
+
       return res.json({
         status: "OFF",
         current_price_eur: null,
@@ -89,7 +92,7 @@ app.get("/api/boiler/status", (req, res) => {
       status,
     });
 
-    res.json({
+    return res.json({
       status,
       current_price_eur: cache.price,
       threshold: THRESHOLD,
@@ -98,7 +101,7 @@ app.get("/api/boiler/status", (req, res) => {
   } catch (err) {
     log("ERROR", "runtime_error", { message: err.message });
 
-    res.json({
+    return res.json({
       status: "OFF",
       current_price_eur: null,
       threshold: THRESHOLD,
@@ -107,6 +110,8 @@ app.get("/api/boiler/status", (req, res) => {
 });
 
 // =====================
-app.listen(PORT, () => {
+// START SERVER (IMPORTANT FIX)
+// =====================
+app.listen(PORT, "0.0.0.0", () => {
   log("INFO", "server_started", { port: PORT });
 });
