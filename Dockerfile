@@ -1,4 +1,4 @@
-FROM node:20-alpine
+FROM node:18-alpine
 
 WORKDIR /app
 
@@ -7,8 +7,6 @@ RUN npm install
 
 COPY . .
 
-# Очистка кэша перед сборкой
-RUN rm -rf /app/node_modules/.cache
 
 EXPOSE 3000
 
